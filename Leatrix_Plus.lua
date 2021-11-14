@@ -1,5 +1,5 @@
 ﻿----------------------------------------------------------------------
--- 	Leatrix Plus 9.1.23.alpha.3 (12th November 2021)
+-- 	Leatrix Plus 9.1.23.alpha.11 (13th November 2021)
 ----------------------------------------------------------------------
 
 --	01:Functions	20:Live			50:RunOnce		70:Logout			
@@ -20,7 +20,7 @@
 	local void
 
 	-- Version
-	LeaPlusLC["AddonVer"] = "9.1.23.alpha.3"
+	LeaPlusLC["AddonVer"] = "9.1.23.alpha.11"
 
 	-- Get locale table
 	local void, Leatrix_Plus = ...
@@ -299,11 +299,11 @@
 
 		-- Check character friends
 		for i = 1, C_FriendList.GetNumFriends() do
-			-- Return true if name matches with or without realm
+			-- Return true is character name matches and GUID matches if there is one (realm is not checked)
 			local friendInfo = C_FriendList.GetFriendInfoByIndex(i)
-			local charFriendName = friendInfo.name
+			local charFriendName = C_FriendList.GetFriendInfoByIndex(i).name
 			charFriendName = strsplit("-", charFriendName, 2)
-			if (guid and (guid == friendInfo.guid)) or (name == charFriendName) then
+			if (name == charFriendName) and (guid and (guid == friendInfo.guid) or true) then
 				return true
 			end
 		end
@@ -322,14 +322,37 @@
 			end
 		end
 
-		-- Check guild roster (new members may need to press J to refresh roster)
-		local gCount = GetNumGuildMembers()
-		for i = 1, gCount do
-			local gName, void, void, void, void, void, void, void, gOnline, void, void, void, void, gMobile, void, void, gGUID = GetGuildRosterInfo(i)
-			if gOnline and not gMobile then
-				gName = strsplit("-", gName, 2)
-				if (guid and (guid == gGUID)) or (name == gName) then
-					return true
+		-- Check guild members if guild is enabled (new members may need to press J to refresh roster)
+		if LeaPlusLC["FriendlyGuild"] == "On" then
+			local gCount = GetNumGuildMembers()
+			for i = 1, gCount do
+				local gName, void, void, void, void, void, void, void, gOnline, void, void, void, void, gMobile, void, void, gGUID = GetGuildRosterInfo(i)
+				if gOnline and not gMobile then
+					gName = strsplit("-", gName, 2)
+					-- Return true if character name matches including GUID if there is one
+					if (name == gName) and (guid and (guid == gGUID) or true) then
+						return true
+					end
+				end
+			end
+		end
+
+		-- Check communities if communities is enabled
+		if LeaPlusLC["FriendlyCommunities"] == "On" then
+			local communities = C_Club.GetSubscribedClubs()
+			for void, community in pairs(communities) do
+				if community.clubType == Enum.ClubType.Character then
+					local cMemberIds = CommunitiesUtil.GetMemberIdsSortedByName(community.clubId)
+					local cMembersInfo = CommunitiesUtil.GetMemberInfo(community.clubId, cMemberIds)
+					for void, member in pairs(cMembersInfo) do
+						if member and member.presence ~= Enum.ClubMemberPresence.Offline and member.presence ~= Enum.ClubMemberPresence.OnlineMobile then
+							local cName = strsplit("-", member.name, 2)
+							-- Return true if character name matches including GUID if there is one
+							if (name == cName) and (guid and (guid == member.guid) or true) then
+								return true
+							end
+						end
+					end
 				end
 			end
 		end
@@ -504,8 +527,7 @@
 
 		if LeaPlusLC["AutoConfirmRole"] == "On" then
 			LFDRoleCheckPopupAcceptButton:SetScript("OnShow", function()
-				local leader = ""
-				local leaderGUID = ""
+				local leader, leaderGUID  = "", ""
 				for i = 1, GetNumSubgroupMembers() do 
 					if UnitIsGroupLeader("party" .. i) then 
 						leader = UnitName("party" .. i)
@@ -5595,6 +5617,31 @@
 				end
 			end)
 
+			-- Temporary (hopefully) fix for 9.1.5 bug with PlayerFrame and vehicles
+			do
+
+				local function FixPlayerFrame()
+					PlayerFrame:ClearAllPoints()
+					PlayerFrame:SetPoint(LeaPlusDB["Frames"]["PlayerFrame"]["Point"], UIParent, LeaPlusDB["Frames"]["PlayerFrame"]["Relative"], LeaPlusDB["Frames"]["PlayerFrame"]["XOffset"], LeaPlusDB["Frames"]["PlayerFrame"]["YOffset"])
+				end
+
+				local bugFrame = CreateFrame("FRAME")
+
+				bugFrame:SetScript("OnEvent", function()
+					FixPlayerFrame()
+					bugFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+				end)
+
+				hooksecurefunc("PlayerFrame_SequenceFinished", function()
+					if UnitAffectingCombat("player") then
+						bugFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+					else
+						FixPlayerFrame()
+					end
+				end)
+
+			end
+
 		end
 
 		----------------------------------------------------------------------
@@ -9494,7 +9541,7 @@
 
 		-- Add editbox
 		LeaPlusLC:MakeTx(InvPanel, "Settings", 16, -72)
-		LeaPlusLC:MakeCB(InvPanel, "InviteFriendsOnly", "Restrict to friends and guild members", 16, -92, false, "If checked, group invites will only be sent to friends and guild members.|n|nIf unchecked, group invites will be sent to everyone.")
+		LeaPlusLC:MakeCB(InvPanel, "InviteFriendsOnly", "Restrict to friends", 16, -92, false, "If checked, group invites will only be sent to friends.|n|nIf unchecked, group invites will be sent to everyone.")
 
 		LeaPlusLC:MakeTx(InvPanel, "Keyword", 356, -72)
 		local KeyBox = LeaPlusLC:CreateEditBox("KeyBox", InvPanel, 140, 10, "TOPLEFT", 356, -92, "KeyBox", "KeyBox")
@@ -9641,7 +9688,8 @@
 			if (not UnitExists("party1") or UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) and strlower(strtrim(arg1)) == strlower(LeaPlusLC["InvKey"]) then
 				if not LeaPlusLC:IsInLFGQueue() then
 					if event == "CHAT_MSG_WHISPER" then
-						if LeaPlusLC:FriendCheck(arg2, arg12) or LeaPlusLC["InviteFriendsOnly"] == "Off" then
+					local void, void, void, void, viod, void, void, void, void, guid = ...
+						if LeaPlusLC:FriendCheck(arg2, guid) or LeaPlusLC["InviteFriendsOnly"] == "Off" then
 							C_PartyInfo.InviteUnit(arg2)
 						end
 					elseif event == "CHAT_MSG_BN_WHISPER" then
@@ -9759,7 +9807,8 @@
 		if event == "PARTY_INVITE_REQUEST" then
 
 			-- If a friend, accept if you're accepting friends and not in Dungeon Finder
-			if (LeaPlusLC["AcceptPartyFriends"] == "On" and LeaPlusLC:FriendCheck(arg1, arg7)) then
+			local void, void, void, void, guid = ...
+			if (LeaPlusLC["AcceptPartyFriends"] == "On" and LeaPlusLC:FriendCheck(arg1, guid)) then
 				if not LeaPlusLC:IsInLFGQueue() then
 					AcceptGroup()
 					for i=1, STATICPOPUP_NUMDIALOGS do
@@ -9783,7 +9832,7 @@
 
 			-- If not a friend and you're blocking invites, decline
 			if LeaPlusLC["NoPartyInvites"] == "On" then
-				if LeaPlusLC:FriendCheck(arg1, arg7) then
+				if LeaPlusLC:FriendCheck(arg1, guid) then
 					return
 				else
 					DeclineGroup()
@@ -9895,6 +9944,8 @@
 				LeaPlusLC:LoadVarChk("InviteFromWhisper", "Off")			-- Invite from whispers
 				LeaPlusLC:LoadVarChk("InviteFriendsOnly", "Off")			-- Restrict invites to friends
 				LeaPlusLC["InvKey"]	= LeaPlusDB["InvKey"] or "inv"			-- Invite from whisper keyword
+				LeaPlusLC:LoadVarChk("FriendlyCommunities", "Off")			-- Friendly communities
+				LeaPlusLC:LoadVarChk("FriendlyGuild", "Off")				-- Friendly guild
 
 				-- Chat
 				LeaPlusLC:LoadVarChk("UseEasyChatResizing", "Off")			-- Use easy resizing
@@ -10118,6 +10169,8 @@
 			LeaPlusDB["InviteFromWhisper"]		= LeaPlusLC["InviteFromWhisper"]
 			LeaPlusDB["InviteFriendsOnly"]		= LeaPlusLC["InviteFriendsOnly"]
 			LeaPlusDB["InvKey"]					= LeaPlusLC["InvKey"]
+			LeaPlusDB["FriendlyCommunities"]	= LeaPlusLC["FriendlyCommunities"]
+			LeaPlusDB["FriendlyGuild"]			= LeaPlusLC["FriendlyGuild"]
 
 			-- Chat
 			LeaPlusDB["UseEasyChatResizing"]	= LeaPlusLC["UseEasyChatResizing"]
@@ -12204,6 +12257,8 @@
 				LeaPlusDB["AutoConfirmRole"] = "On"				-- Queue from friends
 				LeaPlusDB["InviteFromWhisper"] = "On"			-- Invite from whispers
 				LeaPlusDB["InviteFriendsOnly"] = "On"			-- Restrict invites to friends
+				LeaPlusDB["FriendlyCommunities"] = "On"			-- Friendly communities
+				LeaPlusDB["FriendlyGuild"] = "On"				-- Friendly guild
 
 				-- Chat
 				LeaPlusDB["UseEasyChatResizing"] = "On"			-- Use easy resizing
@@ -12612,16 +12667,25 @@
 	pg = "Page2"
 
 	LeaPlusLC:MakeTx(LeaPlusLC[pg], "Blocks"					, 	146, -72)
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoDuelRequests"			, 	"Block duels"					,	146, -92, 	false,	"If checked, duel requests will be blocked unless the player requesting the duel is in your friends list or guild.")
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoPetDuels"				, 	"Block pet battle duels"		,	146, -112, 	false,	"If checked, pet battle duel requests will be blocked unless the player requesting the duel is in your friends list or guild.")
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoPartyInvites"			, 	"Block party invites"			, 	146, -132, 	false,	"If checked, party invitations will be blocked unless the player inviting you is in your friends list or guild.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoDuelRequests"			, 	"Block duels"					,	146, -92, 	false,	"If checked, duel requests will be blocked unless the player requesting the duel is a friend.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoPetDuels"				, 	"Block pet battle duels"		,	146, -112, 	false,	"If checked, pet battle duel requests will be blocked unless the player requesting the duel is a friend.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoPartyInvites"			, 	"Block party invites"			, 	146, -132, 	false,	"If checked, party invitations will be blocked unless the player inviting you is a friend.")
 	LeaPlusLC:MakeCB(LeaPlusLC[pg], "NoFriendRequests"			, 	"Block friend requests"			, 	146, -152, 	false,	"If checked, BattleTag and Real ID friend requests will be automatically declined.|n|nEnabling this option will automatically decline any pending requests.")
 
 	LeaPlusLC:MakeTx(LeaPlusLC[pg], "Groups"					, 	340, -72)
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "AcceptPartyFriends"		, 	"Party from friends"			, 	340, -92, 	false,	"If checked, party invitations from friends or guild members will be automatically accepted unless you are queued in Dungeon Finder.")
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "SyncFromFriends"			, 	"Sync from friends"				,	340, -112, 	false,	"If checked, party sync requests from friends or guild members will be automatically accepted.")
-	LeaPlusLC:MakeCB(LeaPlusLC[pg], "AutoConfirmRole"			, 	"Queue from friends"			,	340, -132, 	false,	"If checked, requests initiated by your party leader to join the Dungeon Finder queue will be automatically accepted if the party leader is in your friends list or guild.|n|nThis option requires that you have selected a role for your character in the Dungeon Finder window.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "AcceptPartyFriends"		, 	"Party from friends"			, 	340, -92, 	false,	"If checked, party invitations from friends will be automatically accepted unless you are queued in Dungeon Finder.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "SyncFromFriends"			, 	"Sync from friends"				,	340, -112, 	false,	"If checked, party sync requests from friends will be automatically accepted.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "AutoConfirmRole"			, 	"Queue from friends"			,	340, -132, 	false,	"If checked, requests initiated by your party leader to join the Dungeon Finder queue will be automatically accepted if the party leader is a friend.|n|nThis option requires that you have selected a role for your character in the Dungeon Finder window.")
 	LeaPlusLC:MakeCB(LeaPlusLC[pg], "InviteFromWhisper"			,   "Invite from whispers"			,	340, -152,	false,	L["If checked, a group invite will be sent to anyone who whispers you with a set keyword as long as you are ungrouped, group leader or raid assistant and not queued for a dungeon or raid.|n|nFriends who message the keyword using Battle.net will not be sent a group invite if they are appearing offline.  They need to either change their online status or use character whispers."] .. "|n|n" .. L["Keyword"] .. ": |cffffffff" .. "dummy" .. "|r")
+
+	local socialFooter = LeaPlusLC:MakeTx(LeaPlusLC[pg], "For all of the social options above, you can treat guild members and members of your communities as friends too.", 	146, -262)
+	socialFooter:SetWidth(380); socialFooter:SetJustifyH("LEFT"); socialFooter:SetWordWrap(true)
+	socialFooter:ClearAllPoints(); socialFooter:SetPoint("BOTTOMLEFT", 146, 96)
+
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "FriendlyGuild"				, 	"Guild"							, 	146, -282, 	false,	"If checked, members of your guild will be treated as friends for all of the options on this page.")
+	LeaPlusLC:MakeCB(LeaPlusLC[pg], "FriendlyCommunities"		, 	"Communities"					, 	340, -282, 	false,	"If checked, members of your communities will be treated as friends for all of the options on this page.")
+	LeaPlusCB["FriendlyCommunities"]:ClearAllPoints()
+	LeaPlusCB["FriendlyCommunities"]:SetPoint("LEFT", LeaPlusCB["FriendlyGuild"], "RIGHT", LeaPlusCB["FriendlyGuild"].f:GetStringWidth(), 0)
 
  	LeaPlusLC:CfgBtn("InvWhisperBtn", LeaPlusCB["InviteFromWhisper"])
 
